@@ -1,12 +1,5 @@
 ---
 name: Issue 3205 fork validation
-'true':
-  push:
-    branches:
-    - pull-request/[0-9]+
-    - main
-    - release-*
-  workflow_dispatch: 
 concurrency:
   group: "${{ github.workflow }}-${{ startsWith(github.ref, 'refs/heads/pull-request/')
     && github.ref || github.run_id }}"
@@ -125,3 +118,10 @@ jobs:
           test "$actual" = "$conclusion"
         done
         echo "Validated $GITHUB_REF: skip=$expected, E2E child jobs=$conclusion" >> "$GITHUB_STEP_SUMMARY"
+'on':
+  push:
+    branches:
+    - pull-request/[0-9]+
+    - main
+    - release-*
+  workflow_dispatch: 
