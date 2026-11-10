@@ -44,6 +44,7 @@ jobs:
           persist-credentials: false
       - name: Find the full PR comparison base
         id: base
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -56,6 +57,8 @@ jobs:
           echo "base=$merge_base" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
+        if: ${{ steps.base.outcome == 'success' }}
+        continue-on-error: true
         with:
           token: ''
           base: ${{ steps.base.outputs.base }}
@@ -105,6 +108,7 @@ jobs:
       pull-requests: read
     env:
       GH_TOKEN: ${{ github.token }}
+      E2E_RESULT: ${{ needs.e2e-tests.result }}
       ACTUAL_SKIP: ${{ needs.changes.result == 'success' && needs.changes.outputs.skip_e2e == 'true' }}
     steps:
       - name: Verify filtering and child job conclusions
@@ -117,6 +121,17 @@ jobs:
           fi
           test "$ACTUAL_SKIP" = "$expected"
           jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs")
+          prerequisite=''
+          case "${title:-}" in
+            image-build-failure) prerequisite='image-builds / build-gpu-operator-arm64' ;;
+            variables-failure) prerequisite='variables / variables' ;;
+          esac
+          if [[ -n "$prerequisite" ]]; then
+            test "$E2E_RESULT" = skipped
+            jq -e --arg name "$prerequisite" '.jobs | any(.name == $name and .conclusion == "failure")' <<< "$jobs"
+            echo "Validated required prerequisite failure: $prerequisite; E2E skipped." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           conclusion=success
           if [[ "$expected" == true ]]; then conclusion=skipped; fi
           for job in e2e-tests-containerd e2e-tests-nvidiadriver; do
