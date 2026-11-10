@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: CI
+name: Issue 3205 fork validation
 
 on:
   push:
@@ -29,77 +29,98 @@ concurrency:
 permissions: {}
 
 jobs:
+  changes:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip_e2e: ${{ steps.filter.outcome == 'success' && steps.filter.outputs.changed == 'true' && steps.filter.outputs.src == 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Find the full PR comparison base
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF##*/}")
+          jq -e --arg sha "$GITHUB_SHA" '.state == "open" and .base.ref != null and .base.sha != null and (.head.sha == $sha or .merge_commit_sha == $sha)' <<< "$pr"
+          base=$(jq -r '.base.sha' <<< "$pr")
+          git fetch --no-tags origin "$base"
+          merge_base=$(git merge-base "$base" "$GITHUB_SHA")
+          echo "base=$merge_base" >> "$GITHUB_OUTPUT"
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          token: ''
+          base: ${{ steps.base.outputs.base }}
+          ref: ${{ github.sha }}
+          predicate-quantifier: every
+          filters: |
+            changed:
+              - '**'
+            src:
+              - '!docs/**'
+              - '!README.md'
+              - '!CONTRIBUTING.md'
+              - '!CODE_OF_CONDUCT.md'
+              - '!SECURITY.md'
+              - '!GOVERNANCE.md'
+              - '!.github/renovate.json'
+      - name: Summarize E2E decision
+        if: ${{ always() }}
+        env:
+          DECISION: ${{ steps.filter.outcome == 'success' && steps.filter.outputs.changed == 'true' && steps.filter.outputs.src == 'false' && 'Skip E2E for documentation/maintenance-only changes.' || 'Run E2E for runtime changes or an unavailable comparison.' }}
+        run: echo "$DECISION" >> "$GITHUB_STEP_SUMMARY"
+
   variables:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/variables.yaml
-
-  code-scanning:
-    permissions:
-      contents: read
-      security-events: write
-      packages: read
-    uses: ./.github/workflows/code-scanning.yaml
-
-  config-checks:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/config-checks.yaml
-
-  golang-checks:
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/golang-checks.yaml
-
-  third-party-notices:
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/third-party-notices-check.yaml
-
-  coverage:
-    needs: [golang-checks]
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/coverage.yaml
-
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo Variables ready
   image-builds:
-    needs: [variables, config-checks, golang-checks]
-    permissions:
-      contents: read
-      id-token: write
-      packages: write
-    uses: ./.github/workflows/image-builds.yaml
-    with:
-      commit_short_sha: ${{ needs.variables.outputs.commit_short_sha }}
-      label_image_source: ${{ needs.variables.outputs.label_image_source }}
-      push_on_build: ${{ needs.variables.outputs.push_on_build }}
-      operator_image_base: ${{ needs.variables.outputs.operator_image_base }}
-
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo CPU placeholder for successful image builds
   e2e-tests:
-    needs: [variables, image-builds]
+    needs: [variables, image-builds, changes]
+    if: ${{ !cancelled() && needs.variables.result == 'success' && needs.image-builds.result == 'success' }}
     permissions:
       contents: read
-      id-token: write
-      packages: write
     uses: ./.github/workflows/e2e-tests.yaml
     with:
-      operator_image: ${{ needs.variables.outputs.operator_image }}
-      operator_version: ${{ needs.variables.outputs.operator_version }}
-    secrets:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SSH_KEY: ${{ secrets.AWS_SSH_KEY }}
-
-  release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [variables, e2e-tests]
+      skip_e2e: ${{ needs.changes.result == 'success' && needs.changes.outputs.skip_e2e == 'true' }}
+      operator_image: validation
+      operator_version: validation
+  verify:
+    if: ${{ always() }}
+    needs: [changes, e2e-tests]
+    runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/release.yaml
-    with:
-      commit_short_sha: ${{ needs.variables.outputs.commit_short_sha }}
-      operator_image_base: ${{ needs.variables.outputs.operator_image_base }}
+      actions: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ACTUAL_SKIP: ${{ needs.changes.result == 'success' && needs.changes.outputs.skip_e2e == 'true' }}
+    steps:
+      - name: Verify filtering and child job conclusions
+        run: |
+          set -euo pipefail
+          expected=false
+          if [[ "$GITHUB_REF" == refs/heads/pull-request/* ]]; then
+            title=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF##*/}" --jq .title 2>/dev/null || true)
+            case "$title" in docs|maintenance|safe-rename) expected=true ;; esac
+          fi
+          test "$ACTUAL_SKIP" = "$expected"
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs")
+          conclusion=success
+          if [[ "$expected" == true ]]; then conclusion=skipped; fi
+          for job in e2e-tests-containerd e2e-tests-nvidiadriver; do
+            actual=$(jq -r --arg name "e2e-tests / $job" '.jobs[] | select(.name == $name) | .conclusion' <<< "$jobs")
+            test "$actual" = "$conclusion"
+          done
+          echo "Validated $GITHUB_REF: skip=$expected, E2E child jobs=$conclusion" >> "$GITHUB_STEP_SUMMARY"
