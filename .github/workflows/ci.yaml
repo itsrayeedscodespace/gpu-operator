@@ -1,141 +1,127 @@
-# Copyright NVIDIA CORPORATION
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+---
 name: Issue 3205 fork validation
-
-on:
-  push:
-    branches:
-      - "pull-request/[0-9]+"
-      - main
-      - release-*
-  workflow_dispatch:
-
 concurrency:
-  group: ${{ github.workflow }}-${{ startsWith(github.ref, 'refs/heads/pull-request/') && github.ref || github.run_id }}
+  group: "${{ github.workflow }}-${{ startsWith(github.ref, 'refs/heads/pull-request/')
+    && github.ref || github.run_id }}"
   cancel-in-progress: true
-
 permissions: {}
-
 jobs:
   changes:
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/') }}
+    if: "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')
+      }}"
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
     outputs:
-      skip_e2e: ${{ steps.filter.outcome == 'success' && steps.filter.outputs.changed == 'true' && steps.filter.outputs.src == 'false' }}
+      skip_e2e: "${{ steps.filter.outcome == 'success' && steps.filter.outputs.changed
+        == 'true' && steps.filter.outputs.src == 'false' }}"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Find the full PR comparison base
-        id: base
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF##*/}")
-          jq -e --arg sha "$GITHUB_SHA" '.state == "open" and .base.ref != null and .base.sha != null and (.head.sha == $sha or .merge_commit_sha == $sha)' <<< "$pr"
-          base=$(jq -r '.base.sha' <<< "$pr")
-          git fetch --no-tags origin "$base"
-          merge_base=$(git merge-base "$base" "$GITHUB_SHA")
-          echo "base=$merge_base" >> "$GITHUB_OUTPUT"
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: filter
-        if: ${{ steps.base.outcome == 'success' }}
-        continue-on-error: true
-        with:
-          token: ''
-          base: ${{ steps.base.outputs.base }}
-          ref: ${{ github.sha }}
-          predicate-quantifier: every
-          filters: |
-            changed:
-              - '**'
-            src:
-              - '!docs/**'
-              - '!README.md'
-              - '!CONTRIBUTING.md'
-              - '!CODE_OF_CONDUCT.md'
-              - '!SECURITY.md'
-              - '!GOVERNANCE.md'
-              - '!.github/renovate.json'
-      - name: Summarize E2E decision
-        if: ${{ always() }}
-        env:
-          DECISION: ${{ steps.filter.outcome == 'success' && steps.filter.outputs.changed == 'true' && steps.filter.outputs.src == 'false' && 'Skip E2E for documentation/maintenance-only changes.' || 'Run E2E for runtime changes or an unavailable comparison.' }}
-        run: echo "$DECISION" >> "$GITHUB_STEP_SUMMARY"
-
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Find the full PR comparison base
+      id: base
+      continue-on-error: true
+      env:
+        GH_TOKEN: "${{ github.token }}"
+      run: |
+        set -euo pipefail
+        pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF##*/}")
+        jq -e --arg sha "$GITHUB_SHA" '.state == "open" and .base.ref != null and .base.sha != null and (.head.sha == $sha or .merge_commit_sha == $sha)' <<< "$pr"
+        base=$(jq -r '.base.sha' <<< "$pr")
+        git fetch --no-tags origin "$base"
+        merge_base=$(git merge-base "$base" "$GITHUB_SHA")
+        echo "base=$merge_base" >> "$GITHUB_OUTPUT"
+    - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
+      id: filter
+      if: "${{ steps.base.outcome == 'success' }}"
+      continue-on-error: true
+      with:
+        token: ''
+        base: "${{ steps.base.outputs.base }}"
+        ref: "${{ github.sha }}"
+        predicate-quantifier: every
+        filters: 'src: ['
+    - name: Summarize E2E decision
+      if: "${{ always() }}"
+      env:
+        DECISION: "${{ steps.filter.outcome == 'success' && steps.filter.outputs.changed
+          == 'true' && steps.filter.outputs.src == 'false' && 'Skip E2E for documentation/maintenance-only
+          changes.' || 'Run E2E for runtime changes or an unavailable comparison.'
+          }}"
+      run: echo "$DECISION" >> "$GITHUB_STEP_SUMMARY"
   variables:
     runs-on: ubuntu-latest
     steps:
-      - run: echo Variables ready
+    - run: echo Variables ready
   image-builds:
     runs-on: ubuntu-latest
     steps:
-      - run: echo CPU placeholder for successful image builds
+    - run: echo CPU placeholder for successful image builds
   e2e-tests:
-    needs: [variables, image-builds, changes]
-    if: ${{ !cancelled() && needs.variables.result == 'success' && needs.image-builds.result == 'success' }}
+    needs:
+    - variables
+    - image-builds
+    - changes
+    if: "${{ !cancelled() && needs.variables.result == 'success' && needs.image-builds.result
+      == 'success' }}"
     permissions:
       contents: read
-    uses: ./.github/workflows/e2e-tests.yaml
+    uses: "./.github/workflows/e2e-tests.yaml"
     with:
-      skip_e2e: ${{ needs.changes.result == 'success' && needs.changes.outputs.skip_e2e == 'true' }}
+      skip_e2e: "${{ needs.changes.result == 'success' && needs.changes.outputs.skip_e2e
+        == 'true' }}"
       operator_image: validation
       operator_version: validation
   verify:
-    if: ${{ always() }}
-    needs: [changes, e2e-tests]
+    if: "${{ always() }}"
+    needs:
+    - changes
+    - e2e-tests
     runs-on: ubuntu-latest
     permissions:
       actions: read
       pull-requests: read
     env:
-      GH_TOKEN: ${{ github.token }}
-      E2E_RESULT: ${{ needs.e2e-tests.result }}
-      ACTUAL_SKIP: ${{ needs.changes.result == 'success' && needs.changes.outputs.skip_e2e == 'true' }}
+      GH_TOKEN: "${{ github.token }}"
+      E2E_RESULT: "${{ needs.e2e-tests.result }}"
+      ACTUAL_SKIP: "${{ needs.changes.result == 'success' && needs.changes.outputs.skip_e2e
+        == 'true' }}"
     steps:
-      - name: Verify filtering and child job conclusions
-        run: |
-          set -euo pipefail
-          expected=false
-          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/pull-request/* ]]; then
-            title=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF##*/}" --jq .title 2>/dev/null || true)
-            case "$title" in docs|maintenance|safe-rename) expected=true ;; esac
-          fi
-          test "$ACTUAL_SKIP" = "$expected"
-          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs")
-          prerequisite=''
-          case "${title:-}" in
-            image-build-failure) prerequisite='image-builds / build-gpu-operator-arm64' ;;
-            variables-failure) prerequisite='variables / variables' ;;
-          esac
-          if [[ -n "$prerequisite" ]]; then
-            test "$E2E_RESULT" = skipped
-            jq -e --arg name "$prerequisite" '.jobs | any(.name == $name and .conclusion == "failure")' <<< "$jobs"
-            echo "Validated required prerequisite failure: $prerequisite; E2E skipped." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          conclusion=success
-          if [[ "$expected" == true ]]; then conclusion=skipped; fi
-          for job in e2e-tests-containerd e2e-tests-nvidiadriver; do
-            actual=$(jq -r --arg name "e2e-tests / $job" '.jobs[] | select(.name == $name) | .conclusion' <<< "$jobs")
-            test "$actual" = "$conclusion"
-          done
-          echo "Validated $GITHUB_REF: skip=$expected, E2E child jobs=$conclusion" >> "$GITHUB_STEP_SUMMARY"
+    - name: Verify filtering and child job conclusions
+      run: |
+        set -euo pipefail
+        expected=false
+        if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/pull-request/* ]]; then
+          title=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF##*/}" --jq .title 2>/dev/null || true)
+          case "$title" in docs|maintenance|safe-rename) expected=true ;; esac
+        fi
+        test "$ACTUAL_SKIP" = "$expected"
+        jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs")
+        prerequisite=''
+        case "${title:-}" in
+          image-build-failure) prerequisite='image-builds / build-gpu-operator-arm64' ;;
+          variables-failure) prerequisite='variables / variables' ;;
+        esac
+        if [[ -n "$prerequisite" ]]; then
+          test "$E2E_RESULT" = skipped
+          jq -e --arg name "$prerequisite" '.jobs | any(.name == $name and .conclusion == "failure")' <<< "$jobs"
+          echo "Validated required prerequisite failure: $prerequisite; E2E skipped." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        conclusion=success
+        if [[ "$expected" == true ]]; then conclusion=skipped; fi
+        for job in e2e-tests-containerd e2e-tests-nvidiadriver; do
+          actual=$(jq -r --arg name "e2e-tests / $job" '.jobs[] | select(.name == $name) | .conclusion' <<< "$jobs")
+          test "$actual" = "$conclusion"
+        done
+        echo "Validated $GITHUB_REF: skip=$expected, E2E child jobs=$conclusion" >> "$GITHUB_STEP_SUMMARY"
+'on':
+  push:
+    branches:
+    - pull-request/[0-9]+
+    - main
+    - release-*
+  workflow_dispatch: 
